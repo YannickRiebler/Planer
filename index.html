@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gym-Planer</title>
+<style>
+:root{--bg:#fafafa;--fg:#161616;--mute:#8a8a8a;--line:#e4e4e4;--hit:#dff3e4;--hitfg:#14532d;--p0:#2563eb;--p1:#e11d48;--p2:#d97706}
+@media(prefers-color-scheme:dark){:root{--bg:#141414;--fg:#ececec;--mute:#808080;--line:#2c2c2c;--hit:#173a22;--hitfg:#86efac}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;display:flex;justify-content:center}
+main{width:100%;max-width:640px;padding:24px 16px 48px}
+header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+h1{font-size:20px;font-weight:600;margin:0;letter-spacing:-.01em}
+button{font:inherit;color:inherit;background:none;border:1px solid var(--line);border-radius:6px;padding:6px 12px;cursor:pointer}
+button:hover{border-color:var(--mute)}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
+button.on{background:var(--fg);color:var(--bg);border-color:var(--fg)}
+button:disabled{opacity:.45;cursor:default}
+.nav{display:flex;align-items:center;gap:8px}
+.nav b{min-width:130px;text-align:center;font-weight:600}
+.me{display:flex;align-items:center;gap:8px;margin-bottom:16px;color:var(--mute)}
+select{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:5px 8px}
+.grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px}
+.dow{color:var(--mute);font-size:12px;text-align:center;padding:4px 0}
+.day{min-height:78px;padding:6px 4px;border:1px solid var(--line);border-radius:6px;text-align:left;display:flex;flex-direction:column;gap:3px;background:none}
+.day.out{visibility:hidden}
+.day.sel{border-color:var(--fg)}
+.day.today .n{font-weight:700;text-decoration:underline}
+.n{font-size:12px;color:var(--mute)}
+.slot{display:flex;gap:2px;justify-content:center;padding:2px 0;border-radius:4px}
+.slot.hit{background:var(--hit)}
+.dot{width:7px;height:7px;border-radius:50%;border:1px solid var(--line)}
+.dot.on.p0{background:var(--p0);border-color:var(--p0)}
+.dot.on.p1{background:var(--p1);border-color:var(--p1)}
+.dot.on.p2{background:var(--p2);border-color:var(--p2)}
+.tag{font-size:11px;font-weight:600;text-align:center;margin-top:auto}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin:12px 0 0;color:var(--mute);font-size:12px}
+.legend i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}
+.panel{margin-top:20px;padding-top:16px;border-top:1px solid var(--line)}
+.panel h2{font-size:16px;margin:0 0 12px;font-weight:600}
+.row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.row input{font:inherit;color:var(--fg);background:none;border:0;border-bottom:1px solid var(--line);width:110px;padding:4px 0}
+.row .sw{width:8px;height:8px;border-radius:50%}
+.tags{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
+.hint{color:var(--mute);font-size:13px;margin-top:12px}
+.sync{margin-top:28px;padding-top:16px;border-top:1px solid var(--line)}
+.sync textarea{width:100%;height:64px;margin-top:8px;font:12px/1.3 ui-monospace,monospace;color:var(--fg);background:none;border:1px solid var(--line);border-radius:6px;padding:8px;resize:vertical}
+.sync .btns{display:flex;gap:8px;flex-wrap:wrap}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Gym-Planer</h1>
+    <div class="nav">
+      <button id="prev" aria-label="Voriger Monat">&lsaquo;</button>
+      <b id="month"></b>
+      <button id="next" aria-label="Nächster Monat">&rsaquo;</button>
+    </div>
+  </header>
+  <div class="me">Ich bin <select id="me"></select></div>
+  <div class="grid" id="grid"></div>
+  <div class="legend" id="legend"></div>
+  <div class="hint">Oberer Punkt-Streifen: morgens, unterer: abends. Grün hinterlegt: alle drei haben Zeit.</div>
+  <section class="panel" id="panel"></section>
+  <section class="sync">
+    <div class="btns" id="setup"></div>
+    <div class="hint" id="msg"></div>
+  </section>
+</main>
+<script>
+// Optional: feste Blob-ID eintragen, dann braucht ihr keinen #-Link (siehe Anleitung).
+const BLOB_ID = "";
+const API = "https://jsonblob.com/api/jsonBlob";
+const H = { "Content-Type": "application/json", "Accept": "application/json" };
+const KEY = "gym-planer-v2", ME = "gym-planer-me";
+const TAGS = ["Push", "Pull", "Legs"];
+const MONTHS = ["Januar","Februar","März","April","Mai","Juni","Juli","August","September","Oktober","November","Dezember"];
+const norm = o => ({ names: (o && o.names) || ["Person 1", "Person 2", "Person 3"], avail: (o && o.avail) || {}, tags: (o && o.tags) || {} });
+let S = norm(null), me = 0, id = BLOB_ID || location.hash.slice(1);
+try { S = norm(JSON.parse(localStorage.getItem(KEY))); me = +localStorage.getItem(ME) || 0; } catch (e) {}
+const now = new Date();
+let year = now.getFullYear(), month = now.getMonth(), sel = null;
+const $ = id => document.getElementById(id);
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); localStorage.setItem(ME, me); } catch (e) {} };
+const iso = (y, m, d) => y + "-" + String(m + 1).padStart(2, "0") + "-" + String(d).padStart(2, "0");
+const get = d => S.avail[d] || ["", "", ""];
+const has = (d, p, slot) => get(d)[p].includes(slot);
+const all = (d, slot) => [0, 1, 2].every(p => has(d, p, slot));
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+/* ---- Sync: jede Änderung wird auf den aktuellen Stand im Netz angewendet ---- */
+async function pull() {
+  const r = await fetch(API + "/" + id, { headers: H, cache: "no-store" });
+  if (!r.ok) throw new Error("pull");
+  return norm(await r.json());
+}
+async function mutate(fn) {
+  fn(S); save(); render();
+  if (!id) return;
+  try {
+    const R = await pull();
+    fn(R);
+    const r = await fetch(API + "/" + id, { method: "PUT", headers: H, body: JSON.stringify(R) });
+    if (!r.ok) throw new Error("put");
+    S = R; save(); status(true); render();
+  } catch (e) { status(false); }
+}
+function status(ok) {
+  $("msg").textContent = !id ? "Noch kein gemeinsamer Kalender verbunden."
+    : ok ? "Live verbunden. Änderungen erscheinen bei allen nach wenigen Sekunden."
+    : "Keine Verbindung. Änderungen werden beim nächsten Versuch nicht übertragen.";
+}
+async function poll() {
+  if (!id || document.hidden) return;
+  try {
+    const R = await pull();
+    if (JSON.stringify(R) !== JSON.stringify(S)) {
+      S = R; save();
+      if (!(document.activeElement && document.activeElement.tagName === "INPUT")) render();
+    }
+    status(true);
+  } catch (e) { status(false); }
+}
+async function create() {
+  try {
+    const r = await fetch(API, { method: "POST", headers: H, body: JSON.stringify(S) });
+    const loc = r.headers.get("Location");
+    if (!r.ok || !loc) throw new Error("create");
+    id = loc.split("/").pop();
+    location.hash = id;
+    setup(); status(true);
+    $("msg").textContent = "Kalender erstellt. Kopiere den Link und schicke ihn den anderen.";
+  } catch (e) {
+    $("msg").textContent = "Erstellen im Browser hat nicht geklappt. Lege die ID einmalig per Terminal an (siehe Anleitung) und trage sie bei BLOB_ID ein.";
+  }
+}
+function setup() {
+  $("setup").innerHTML = id
+    ? '<button id="copy">Link zum Teilen kopieren</button>'
+    : '<button id="make">Gemeinsamen Kalender erstellen</button>';
+  if (id) $("copy").onclick = async () => {
+    try { await navigator.clipboard.writeText(location.href); $("msg").textContent = "Link kopiert."; }
+    catch (e) { $("msg").textContent = location.href; }
+  };
+  else $("make").onclick = create;
+}
+
+/* ---- Aktionen ---- */
+const toggle = (d, p, slot) => mutate(s => {
+  const a = [...(s.avail[d] || ["", "", ""])];
+  a[p] = a[p].includes(slot) ? a[p].replace(slot, "") : a[p] + slot;
+  s.avail[d] = a;
+});
+const setTag = (d, t) => mutate(s => { if (t) s.tags[d] = t; else delete s.tags[d]; });
+const rename = (p, n) => mutate(s => { s.names[p] = n; });
+
+/* ---- Darstellung ---- */
+function dots(d, slot) {
+  return [0, 1, 2].map(p => '<span class="dot p' + p + (has(d, p, slot) ? " on" : "") + '"></span>').join("");
+}
+function render() {
+  $("month").textContent = MONTHS[month] + " " + year;
+  $("me").innerHTML = S.names.map((n, i) => '<option value="' + i + '"' + (i === me ? " selected" : "") + ">" + esc(n) + "</option>").join("");
+  $("legend").innerHTML = S.names.map((n, i) => '<span><i style="background:var(--p' + i + ')"></i>' + esc(n) + "</span>").join("");
+  const lead = (new Date(year, month, 1).getDay() + 6) % 7;
+  const days = new Date(year, month + 1, 0).getDate();
+  let h = ["Mo","Di","Mi","Do","Fr","Sa","So"].map(x => '<div class="dow">' + x + "</div>").join("");
+  for (let i = 0; i < lead; i++) h += '<div class="day out"></div>';
+  for (let d = 1; d <= days; d++) {
+    const k = iso(year, month, d);
+    const today = k === iso(now.getFullYear(), now.getMonth(), now.getDate());
+    h += '<button class="day' + (k === sel ? " sel" : "") + (today ? " today" : "") + '" data-d="' + k + '">' +
+      '<span class="n">' + d + "</span>" +
+      '<span class="slot' + (all(k, "m") ? " hit" : "") + '">' + dots(k, "m") + "</span>" +
+      '<span class="slot' + (all(k, "e") ? " hit" : "") + '">' + dots(k, "e") + "</span>" +
+      '<span class="tag">' + (S.tags[k] || "") + "</span></button>";
+  }
+  $("grid").innerHTML = h;
+  renderPanel();
+}
+function renderPanel() {
+  if (!sel) { $("panel").innerHTML = '<div class="hint">Tag antippen, um Zeiten einzutragen oder Push, Pull oder Legs zu wählen.</div>'; return; }
+  const [y, m, d] = sel.split("-").map(Number);
+  const title = new Date(y, m - 1, d).toLocaleDateString("de-DE", { weekday: "long", day: "numeric", month: "long" });
+  let h = "<h2>" + title + "</h2>";
+  for (let p = 0; p < 3; p++) {
+    const mine = p === me;
+    h += '<div class="row"><span class="sw" style="background:var(--p' + p + ')"></span>' +
+      '<input data-name="' + p + '" value="' + esc(S.names[p]) + '" aria-label="Name ' + (p + 1) + '">' +
+      '<button data-p="' + p + '" data-s="m" class="' + (has(sel, p, "m") ? "on" : "") + '"' + (mine ? "" : " disabled") + ">Morgens</button>" +
+      '<button data-p="' + p + '" data-s="e" class="' + (has(sel, p, "e") ? "on" : "") + '"' + (mine ? "" : " disabled") + ">Abends</button></div>";
+  }
+  h += '<div class="tags">' + TAGS.map(t => '<button data-tag="' + t + '" class="' + (S.tags[sel] === t ? "on" : "") + '">' + t + "</button>").join("") +
+    '<button data-tag="">Kein Tag</button></div>';
+  $("panel").innerHTML = h;
+}
+
+$("grid").onclick = e => { const b = e.target.closest("[data-d]"); if (b) { sel = b.dataset.d; render(); } };
+$("panel").onclick = e => {
+  const b = e.target.closest("button"); if (!b) return;
+  if (b.dataset.s) toggle(sel, +b.dataset.p, b.dataset.s);
+  else if (b.dataset.tag !== undefined) setTag(sel, b.dataset.tag);
+};
+$("panel").onchange = e => {
+  if (e.target.dataset.name !== undefined) rename(+e.target.dataset.name, e.target.value.trim() || "Person");
+};
+$("me").onchange = e => { me = +e.target.value; save(); render(); };
+$("prev").onclick = () => { if (--month < 0) { month = 11; year--; } render(); };
+$("next").onclick = () => { if (++month > 11) { month = 0; year++; } render(); };
+window.onhashchange = () => { if (!BLOB_ID) { id = location.hash.slice(1); setup(); poll(); } };
+
+setup(); status(true); render(); poll();
+setInterval(poll, 5000);
+</script>
+</body>
+</html>
