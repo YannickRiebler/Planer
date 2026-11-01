@@ -65,23 +65,24 @@ select{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--
   <div class="hint">Oberer Punkt-Streifen: morgens, unterer: abends. Grün hinterlegt: alle drei haben Zeit.</div>
   <section class="panel" id="panel"></section>
   <section class="sync">
-    <div class="btns" id="setup"></div>
     <div class="hint" id="msg"></div>
   </section>
 </main>
 <script>
-// Optional: feste Blob-ID eintragen, dann braucht ihr keinen #-Link (siehe Anleitung).
-const BLOB_ID = "01a1984a-a15a-7ed7-b108-c6a75976e3f1";
-const API = "https://jsonblob.com/api/jsonBlob";
-const H = { "Content-Type": "application/json", "Accept": "application/json" };
-const KEY = "gym-planer-v2", ME = "gym-planer-me";
+// Adresse deiner Firebase Realtime Database, ohne Schrägstrich am Ende.
+// Beispiel: "https://gym-planer-12345-default-rtdb.europe-west1.firebasedatabase.app"
+const DB_URL = "https://planer-ab262-default-rtdb.europe-west1.firebasedatabase.app/";
+const ROOT = "gym";
+const KEY = "gym-planer-v3", ME = "gym-planer-me";
 const TAGS = ["Push", "Pull", "Legs"];
 const MONTHS = ["Januar","Februar","März","April","Mai","Juni","Juli","August","September","Oktober","November","Dezember"];
-const norm = o => ({ names: (o && o.names) || ["Person 1", "Person 2", "Person 3"], avail: (o && o.avail) || {}, tags: (o && o.tags) || {} });
-let S = norm(null), me = 0, id = BLOB_ID || location.hash.slice(1);
-try { S = norm(JSON.parse(localStorage.getItem(KEY))); me = +localStorage.getItem(ME) || 0; } catch (e) {}
+const emptyS = () => ({ names: ["Person 1", "Person 2", "Person 3"], avail: {}, tags: {} });
+const canon = v => JSON.stringify(v, (k, x) => x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map(k => [k, x[k]])) : x);
+let S = emptyS(), me = 0;
+try { S = Object.assign(emptyS(), JSON.parse(localStorage.getItem(KEY))); me = +localStorage.getItem(ME) || 0; } catch (e) {}
 const now = new Date();
 let year = now.getFullYear(), month = now.getMonth(), sel = null;
+let inflight = 0, err = "", connected = false;
 const $ = id => document.getElementById(id);
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); localStorage.setItem(ME, me); } catch (e) {} };
 const iso = (y, m, d) => y + "-" + String(m + 1).padStart(2, "0") + "-" + String(d).padStart(2, "0");
@@ -90,77 +91,61 @@ const has = (d, p, slot) => get(d)[p].includes(slot);
 const all = (d, slot) => [0, 1, 2].every(p => has(d, p, slot));
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
-/* ---- Sync: Änderungen werden gesammelt und auf den frischen Stand im Netz angewendet ---- */
-let pending = [], busy = false, err = "";
-async function pull() {
-  let r;
-  try { r = await fetch(API + "/" + id, { headers: H, cache: "no-store" }); }
-  catch (e) { throw new Error("Lesen: " + e.message); }
-  if (!r.ok) throw new Error("Lesen: HTTP " + r.status);
-  return norm(await r.json());
+/* ---- Sync mit Firebase (REST). Jede Änderung schreibt nur ihren eigenen Pfad. ---- */
+async function send(path, method, body) {
+  const url = DB_URL + "/" + ROOT + (path ? "/" + path : "") + ".json";
+  const r = await fetch(url, { method, body: body === undefined ? undefined : JSON.stringify(body) });
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r;
 }
-async function push(R) {
-  let r;
-  try { r = await fetch(API + "/" + id, { method: "PUT", headers: H, body: JSON.stringify(R) }); }
-  catch (e) { throw new Error("Schreiben: " + e.message); }
-  if (!r.ok) throw new Error("Schreiben: HTTP " + r.status);
+function fromRemote(v) {
+  const R = emptyS();
+  if (!v) return R;
+  [0, 1, 2].forEach(p => { const n = v.names && v.names["p" + p]; if (n) R.names[p] = n; });
+  for (const d in (v.avail || {})) { const o = v.avail[d] || {}; R.avail[d] = [0, 1, 2].map(p => o["p" + p] || ""); }
+  R.tags = Object.assign({}, v.tags || {});
+  return R;
 }
-async function flush() {
-  if (!id || busy) return;
-  busy = true;
-  const batch = pending; pending = [];
+async function write(path, value) {
+  if (!DB_URL) return;
+  inflight++;
+  try { await send(path, value === null ? "DELETE" : "PUT", value === null ? undefined : value); err = ""; }
+  catch (e) { err = "Schreiben: " + e.message; }
+  inflight--; status();
+}
+async function poll() {
+  if (!DB_URL || document.hidden || inflight) return;
   try {
-    const R = await pull();
-    batch.forEach(fn => fn(R));
-    if (batch.length) await push(R);
-    const changed = JSON.stringify(R) !== JSON.stringify(S);
-    pending.forEach(fn => fn(R));
-    S = R; save(); err = "";
-    if (changed && !(document.activeElement && document.activeElement.tagName === "INPUT")) render();
-  } catch (e) { err = e.message; pending = batch.concat(pending); }
-  busy = false; status();
-  if (pending.length && !err) flush();
+    const R = fromRemote(await (await send("", "GET")).json());
+    if (inflight) return;
+    connected = true; err = "";
+    if (canon(R) !== canon(S)) {
+      S = R; save();
+      if (!(document.activeElement && document.activeElement.tagName === "INPUT")) render();
+    }
+  } catch (e) { err = "Lesen: " + e.message; }
+  status();
 }
-function mutate(fn) { fn(S); save(); render(); if (id) { pending.push(fn); status(); flush(); } }
 function status() {
-  $("msg").textContent = !id ? "Noch kein gemeinsamer Kalender verbunden."
-    : err ? "Fehler (" + err + "). Deine Änderungen sind nur lokal und werden erneut versucht."
-    : pending.length ? "Speichere …"
+  $("msg").textContent = !DB_URL ? "Noch keine Datenbank verbunden. Trage DB_URL oben im Skript ein."
+    : err ? "Fehler (" + err + "). Änderungen werden nicht gespeichert."
+    : !connected ? "Verbinde …"
     : "Live verbunden. Änderungen erscheinen bei allen nach wenigen Sekunden.";
-}
-const poll = () => { if (id && !document.hidden) flush(); };
-async function create() {
-  try {
-    const r = await fetch(API, { method: "POST", headers: H, body: JSON.stringify(S) });
-    const loc = r.headers.get("Location");
-    if (!r.ok || !loc) throw new Error("create");
-    id = loc.split("/").pop();
-    location.hash = id;
-    setup(); status(true);
-    $("msg").textContent = "Kalender erstellt. Kopiere den Link und schicke ihn den anderen.";
-  } catch (e) {
-    $("msg").textContent = "Erstellen im Browser hat nicht geklappt. Lege die ID einmalig per Terminal an (siehe Anleitung) und trage sie bei BLOB_ID ein.";
-  }
-}
-function setup() {
-  $("setup").innerHTML = id
-    ? '<button id="copy">Link zum Teilen kopieren</button>'
-    : '<button id="make">Gemeinsamen Kalender erstellen</button>';
-  if (id) $("copy").onclick = async () => {
-    try { await navigator.clipboard.writeText(location.href); $("msg").textContent = "Link kopiert."; }
-    catch (e) { $("msg").textContent = location.href; }
-  };
-  else $("make").onclick = create;
 }
 
 /* ---- Aktionen ---- */
-const toggle = (d, p, slot) => mutate(s => {
-  const a = [...(s.avail[d] || ["", "", ""])];
+function toggle(d, p, slot) {
+  const a = [...get(d)];
   a[p] = a[p].includes(slot) ? a[p].replace(slot, "") : a[p] + slot;
-  s.avail[d] = a;
-});
-const setTag = (d, t) => mutate(s => { if (t) s.tags[d] = t; else delete s.tags[d]; });
-const rename = (p, n) => mutate(s => { s.names[p] = n; });
+  S.avail[d] = a; save(); render();
+  write("avail/" + d + "/p" + p, a[p]);
+}
+function setTag(d, t) {
+  if (t) S.tags[d] = t; else delete S.tags[d];
+  save(); render();
+  write("tags/" + d, t || null);
+}
+function rename(p, n) { S.names[p] = n; save(); render(); write("names/p" + p, n); }
 
 /* ---- Darstellung ---- */
 function dots(d, slot) {
@@ -215,10 +200,9 @@ $("panel").onchange = e => {
 $("me").onchange = e => { me = +e.target.value; save(); render(); };
 $("prev").onclick = () => { if (--month < 0) { month = 11; year--; } render(); };
 $("next").onclick = () => { if (++month > 11) { month = 0; year++; } render(); };
-window.onhashchange = () => { if (!BLOB_ID) { id = location.hash.slice(1); setup(); poll(); } };
 
-setup(); status(true); render(); poll();
-setInterval(poll, 5000);
+status(); render(); poll();
+setInterval(poll, 3000);
 </script>
 </body>
 </html>
