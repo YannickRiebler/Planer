@@ -76,7 +76,7 @@ const ROOT = "gym";
 const KEY = "gym-planer-v3", ME = "gym-planer-me";
 const TAGS = ["Push", "Pull", "Legs"];
 const MONTHS = ["Januar","Februar","März","April","Mai","Juni","Juli","August","September","Oktober","November","Dezember"];
-const emptyS = () => ({ names: ["Person 1", "Person 2", "Person 3"], avail: {}, tags: {} });
+const emptyS = () => ({ names: ["Elias", "Clemens", "Thorsten"], avail: {}, tags: {} });
 const canon = v => JSON.stringify(v, (k, x) => x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map(k => [k, x[k]])) : x);
 let S = emptyS(), me = 0;
 try { S = Object.assign(emptyS(), JSON.parse(localStorage.getItem(KEY))); me = +localStorage.getItem(ME) || 0; } catch (e) {}
