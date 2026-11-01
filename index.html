@@ -90,39 +90,45 @@ const has = (d, p, slot) => get(d)[p].includes(slot);
 const all = (d, slot) => [0, 1, 2].every(p => has(d, p, slot));
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
-/* ---- Sync: jede Änderung wird auf den aktuellen Stand im Netz angewendet ---- */
+/* ---- Sync: Änderungen werden gesammelt und auf den frischen Stand im Netz angewendet ---- */
+let pending = [], busy = false, err = "";
 async function pull() {
-  const r = await fetch(API + "/" + id, { headers: H, cache: "no-store" });
-  if (!r.ok) throw new Error("pull");
+  let r;
+  try { r = await fetch(API + "/" + id, { headers: H, cache: "no-store" }); }
+  catch (e) { throw new Error("Lesen: " + e.message); }
+  if (!r.ok) throw new Error("Lesen: HTTP " + r.status);
   return norm(await r.json());
 }
-async function mutate(fn) {
-  fn(S); save(); render();
-  if (!id) return;
+async function push(R) {
+  let r;
+  try { r = await fetch(API + "/" + id, { method: "PUT", headers: H, body: JSON.stringify(R) }); }
+  catch (e) { throw new Error("Schreiben: " + e.message); }
+  if (!r.ok) throw new Error("Schreiben: HTTP " + r.status);
+}
+async function flush() {
+  if (!id || busy) return;
+  busy = true;
+  const batch = pending; pending = [];
   try {
     const R = await pull();
-    fn(R);
-    const r = await fetch(API + "/" + id, { method: "PUT", headers: H, body: JSON.stringify(R) });
-    if (!r.ok) throw new Error("put");
-    S = R; save(); status(true); render();
-  } catch (e) { status(false); }
+    batch.forEach(fn => fn(R));
+    if (batch.length) await push(R);
+    const changed = JSON.stringify(R) !== JSON.stringify(S);
+    pending.forEach(fn => fn(R));
+    S = R; save(); err = "";
+    if (changed && !(document.activeElement && document.activeElement.tagName === "INPUT")) render();
+  } catch (e) { err = e.message; pending = batch.concat(pending); }
+  busy = false; status();
+  if (pending.length && !err) flush();
 }
-function status(ok) {
+function mutate(fn) { fn(S); save(); render(); if (id) { pending.push(fn); status(); flush(); } }
+function status() {
   $("msg").textContent = !id ? "Noch kein gemeinsamer Kalender verbunden."
-    : ok ? "Live verbunden. Änderungen erscheinen bei allen nach wenigen Sekunden."
-    : "Keine Verbindung. Änderungen werden beim nächsten Versuch nicht übertragen.";
+    : err ? "Fehler (" + err + "). Deine Änderungen sind nur lokal und werden erneut versucht."
+    : pending.length ? "Speichere …"
+    : "Live verbunden. Änderungen erscheinen bei allen nach wenigen Sekunden.";
 }
-async function poll() {
-  if (!id || document.hidden) return;
-  try {
-    const R = await pull();
-    if (JSON.stringify(R) !== JSON.stringify(S)) {
-      S = R; save();
-      if (!(document.activeElement && document.activeElement.tagName === "INPUT")) render();
-    }
-    status(true);
-  } catch (e) { status(false); }
-}
+const poll = () => { if (id && !document.hidden) flush(); };
 async function create() {
   try {
     const r = await fetch(API, { method: "POST", headers: H, body: JSON.stringify(S) });
